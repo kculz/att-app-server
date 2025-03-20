@@ -1,0 +1,32 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@reduxjs/toolkit": "^2.6.1",
+    "axios": "^1.8.3",
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "http": "^0.0.1-security",
+    "jsonwebtoken": "^9.0.2",
+    "mongoose": "^8.11.0",
+    "react-redux": "^9.2.0",
+    "url": "^0.11.4",
+    "websocket": "^1.0.35",
+    "ws": "^8.18.1"
+  },
+  "devDependencies": {
+    "@greycode/env_init": "^1.0.5",
+    "@greycode/gitignore_init": "^0.0.2",
+    "nodemon": "^3.1.9"
+  }
+}
