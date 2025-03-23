@@ -5,9 +5,9 @@ require("dotenv").config();
 const port = process.env.PORT || 3000; // Corrected the order to prioritize environment variable
 const mongoose = require("mongoose");
 const cors = require("cors");
-const { initializeWebSockets } = require("./controllers/websocket");
-
-
+const { initializeWebSockets } = require("./controllers/websocket"); 
+  
+ 
 app.use(cors({
   origin: "*", // Allow all origins (for development only)
   methods: ["GET", "POST", "PUT", "DELETE"],
@@ -35,7 +35,8 @@ app.use("/api/v1/auth", require("./routes/authRoute"));
 app.use("/api/v1/user", require("./routes/userRoute"));
 app.use("/api/v1/internship", require("./routes/internshipRoute"));
 app.use("/api/v1/report", require("./routes/reportRoute"));
-app.use("api/v1/chats", require("./routes/chatRoute"));
+app.use("/api/v1/chats", require("./routes/chatRoute"));
+app.use("/api/v1/supervisions", require("./routes/scheduleRoute"));
 
 
 // Create HTTP server

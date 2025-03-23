@@ -1,119 +1,210 @@
-const Chat = require('../models/Chat');
-const Message = require('../models/Message');
-const Supervision = require('../models/SupervisionSchema');
+// controllers/chatController.js
+const Chat = require("../models/Chat");
+const Supervision = require("../models/SupervisionSchema");
+const mongoose = require("mongoose");
 
-const chatController = {
-  // Create a new chat for a supervision
-  createChat: async (req, res) => {
-    try {
-      const { supervisionId } = req.body;
-      const userId = req.user.id;
-
-      // Verify supervision exists and user is part of it
-      const supervision = await Supervision.findById(supervisionId);
-      if (!supervision) {
-        return res.status(404).json({ message: 'Supervision not found' });
-      }
-
-      if (supervision.student.toString() !== userId && supervision.supervisor.toString() !== userId) {
-        return res.status(403).json({ message: 'Not authorized' });
-      }
-
-      // Check if chat already exists
-      const existingChat = await Chat.findOne({ supervision: supervisionId });
-      if (existingChat) {
-        return res.status(400).json({ message: 'Chat already exists for this supervision' });
-      }
-
-      // Create new chat
-      const newChat = new Chat({
-        supervision: supervisionId,
-        messages: [],
-        lastActivity: Date.now(),
-        status: 'active',
-      });
-
-      await newChat.save();
-      return res.status(201).json(newChat);
-    } catch (error) {
-      console.error('Error creating chat:', error);
-      return res.status(500).json({ message: 'Server error' });
+// Student controller: Get the student's single chat
+exports.getStudentChat = async (req, res) => {
+  try {
+    const studentId = req.user.id; // Assuming user ID is attached by auth middleware
+    
+    // First find the supervision where the user is a student
+    const supervision = await Supervision.findOne({ 
+      student: studentId,
+      status: "active" 
+    });
+    
+    if (!supervision) {
+      return res.status(404).json({ message: "No active supervision found" });
     }
-  },
-
-  // Get chat by ID
-  getChat: async (req, res) => {
-    try {
-      const chatId = req.params.id;
-      const userId = req.user.id;
-
-      const chat = await Chat.findById(chatId)
-        .populate({
-          path: 'messages',
-          model: 'Message',
-          populate: {
-            path: 'sender',
-            model: 'User',
-            select: 'name avatar',
-          },
-        })
-        .populate({
-          path: 'supervision',
-          model: 'Supervision',
-          populate: [
-            { path: 'student', model: 'User', select: 'name avatar' },
-            { path: 'supervisor', model: 'User', select: 'name avatar' },
-          ],
-        });
-
-      if (!chat) {
-        return res.status(404).json({ message: 'Chat not found' });
-      }
-
-      // Verify user is part of this supervision
-      const supervision = chat.supervision;
-      if (supervision.student._id.toString() !== userId && supervision.supervisor._id.toString() !== userId) {
-        return res.status(403).json({ message: 'Not authorized' });
-      }
-
-      // Mark messages as read if sent by the other user
-      const unreadMessages = chat.messages.filter(
-        (msg) => !msg.isRead && msg.sender._id.toString() !== userId
-      );
-
-      if (unreadMessages.length > 0) {
-        await Message.updateMany(
-          { _id: { $in: unreadMessages.map((msg) => msg._id) } },
-          { $set: { isRead: true } }
-        );
-
-        // Notify the other user that messages have been read
-        const otherUserId =
-          supervision.student._id.toString() === userId
-            ? supervision.supervisor._id.toString()
-            : supervision.student._id.toString();
-
-        if (connections.has(otherUserId)) {
-          const readData = {
-            type: 'messages_read',
-            chatId: chat._id,
-            messageIds: unreadMessages.map((msg) => msg._id),
-          };
-
-          connections.get(otherUserId).forEach((conn) => {
-            if (conn.readyState === WebSocket.OPEN) {
-              conn.send(JSON.stringify(readData));
-            }
-          });
-        }
-      }
-
-      return res.json(chat);
-    } catch (error) {
-      console.error('Error getting chat:', error);
-      return res.status(500).json({ message: 'Server error' });
+    
+    // Find the chat associated with this supervision
+    const chat = await Chat.findOne({ 
+      supervision: supervision._id 
+    })
+    .populate({
+      path: 'messages.sender',
+      select: 'name' // Only return the sender's name
+    });
+    
+    if (!chat) {
+      return res.status(404).json({ message: "Chat not found" });
     }
-  },
+    
+    res.status(200).json(chat);
+  } catch (error) {
+    console.error("Error getting student chat:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
 };
 
-module.exports = chatController;
+// Supervisor controller: Get all chats for the supervisor
+exports.getSupervisorChats = async (req, res) => {
+  try {
+    const supervisorId = req.user.id; // Assuming user ID is attached by auth middleware
+    
+    // First find all supervisions where the user is a supervisor
+    const supervisions = await Supervision.find({ 
+      supervisor: supervisorId,
+      status: "active" 
+    });
+    
+    if (!supervisions.length) {
+      return res.status(404).json({ message: "No active supervisions found" });
+    }
+    
+    // Get the IDs of all supervisions
+    const supervisionIds = supervisions.map(supervision => supervision._id);
+    
+    // Find all chats associated with these supervisions
+    const chats = await Chat.find({ 
+      supervision: { $in: supervisionIds } 
+    })
+    .populate({
+      path: 'supervision',
+      populate: {
+        path: 'student',
+        select: 'name' // Get student names for the chat list
+      }
+    })
+    .select('supervision lastActivity status')
+    .sort({ lastActivity: -1 }); // Sort by most recent activity
+    
+    res.status(200).json(chats);
+  } catch (error) {
+    console.error("Error getting supervisor chats:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+// Get chat by ID (for both student and supervisor)
+exports.getChatById = async (req, res) => {
+  try {
+    const chatId = req.params.id;
+    const userId = req.user.id;
+    
+    // Validate if the chat ID is a valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return res.status(400).json({ message: "Invalid chat ID" });
+    }
+    
+    // Find the chat
+    const chat = await Chat.findById(chatId)
+      .populate({
+        path: 'supervision',
+        select: 'student supervisor'
+      })
+      .populate({
+        path: 'messages.sender',
+        select: 'name'
+      });
+    
+    if (!chat) {
+      return res.status(404).json({ message: "Chat not found" });
+    }
+    
+    // Check if the user is either the student or supervisor of this chat
+    if (
+      chat.supervision.student.toString() !== userId && 
+      chat.supervision.supervisor.toString() !== userId
+    ) {
+      return res.status(403).json({ message: "Not authorized to access this chat" });
+    }
+    
+    // Mark messages as read if the user is the recipient
+    const unreadMessages = chat.messages.filter(
+      msg => msg.sender._id.toString() !== userId && !msg.isRead
+    );
+    
+    if (unreadMessages.length > 0) {
+      const messageIds = unreadMessages.map(msg => msg._id);
+      
+      // Update the messages to mark as read
+      await Chat.updateOne(
+        { _id: chatId, "messages._id": { $in: messageIds } },
+        { $set: { "messages.$[elem].isRead": true } },
+        { arrayFilters: [{ "elem._id": { $in: messageIds } }] }
+      );
+      
+      // Update the read status in the response object too
+      unreadMessages.forEach(msg => {
+        msg.isRead = true;
+      });
+    }
+    
+    res.status(200).json(chat);
+  } catch (error) {
+    console.error("Error getting chat by ID:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};
+
+
+// Send message to a chat
+exports.sendMessage = async (req, res) => {
+  try {
+    const chatId = req.params.id;
+    const userId = req.user.id;
+    const { content } = req.body;
+    
+    // Validate required fields
+    if (!content || content.trim() === '') {
+      return res.status(400).json({ message: "Message content is required" });
+    }
+    
+    // Validate if the chat ID is a valid MongoDB ObjectId
+    if (!mongoose.Types.ObjectId.isValid(chatId)) {
+      return res.status(400).json({ message: "Invalid chat ID" });
+    }
+    
+    // Find the chat
+    const chat = await Chat.findById(chatId)
+      .populate({
+        path: 'supervision',
+        select: 'student supervisor'
+      });
+    
+    if (!chat) {
+      return res.status(404).json({ message: "Chat not found" });
+    }
+    
+    // Check if the user is either the student or supervisor of this chat
+    if (
+      chat.supervision.student.toString() !== userId && 
+      chat.supervision.supervisor.toString() !== userId
+    ) {
+      return res.status(403).json({ message: "Not authorized to send messages to this chat" });
+    }
+    
+    // Create the new message
+    const newMessage = {
+      sender: userId,
+      content,
+      timestamp: new Date(),
+      isRead: false
+    };
+    
+    // Add the message to the chat
+    chat.messages.push(newMessage);
+    
+    // Update the lastActivity field
+    chat.lastActivity = new Date();
+    
+    // Save the updated chat
+    await chat.save();
+    
+    // Return the newly created message with populated sender
+    const populatedChat = await Chat.findById(chatId)
+      .populate({
+        path: 'messages.sender',
+        select: 'name'
+      });
+    
+    const sentMessage = populatedChat.messages[populatedChat.messages.length - 1];
+    
+    res.status(201).json(sentMessage);
+  } catch (error) {
+    console.error("Error sending message:", error);
+    res.status(500).json({ message: "Server error", error: error.message });
+  }
+};

@@ -1,4 +1,6 @@
 const User = require("../models/User");
+const Course = require("../models/Course");
+const Level = require("../models/Level");
 const bcrypt = require("bcryptjs");
 const Fee = require("../models/Fee");
 
@@ -80,8 +82,8 @@ const getStudentProfile = async (req, res) => {
         degreeLevel: student.level?.name || "Not specified",
         feeStatus: {
           semester: "Semester 2, 2025", // Replace with dynamic data if available
-          status: "Partially Paid", // Replace with dynamic data if available
-          balance: "ZIG 15,000", // Replace with dynamic data if available
+          status: "Fully Paid", // Replace with dynamic data if available
+          balance: "ZIG 0.00", // Replace with dynamic data if available
         },
       });
     } catch (err) {
@@ -113,5 +115,32 @@ const getStudentProfile = async (req, res) => {
       return res.status(500).json({ error: err.message });
     }
   };
-
-exports.UserController = { createStudent, createSupervisor, getStudentProfile, updateStudentProfile };
+  const getSupervisorProfile = async (req, res) => {
+    const { id } = req.user; // Extract user ID from JWT token
+  
+    try {
+      const supervisor = await User.findById(id).populate("course");
+  
+      if (!supervisor) {
+        return res.status(404).json({ msg: "Supervisor not found." });
+      }
+  
+      return res.status(200).json({
+        fullName: supervisor.name,
+        supervisorId: supervisor.nationalID,
+        email: supervisor.email,
+        phone: supervisor.phone || "Not provided",
+        assignedCourse: supervisor.course?.name || "Not assigned",
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  };
+  
+  module.exports.UserController = {
+    createStudent,
+    createSupervisor,
+    getStudentProfile,
+    updateStudentProfile,
+    getSupervisorProfile, // <-- Added here
+  };

@@ -12,10 +12,14 @@ const SupervisionSchema = new Schema({
       ref: "User", 
       required: true 
     },
+    start: {
+      type: Date,
+      required: false
+    },
     status: { 
       type: String, 
-      enum: ["active", "completed", "terminated"],
-      default: "active"
+      enum: ["active", "completed", "terminated", "pending"],
+      default: "pending"
     }
   });
 

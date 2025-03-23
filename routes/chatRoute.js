@@ -1,14 +1,18 @@
 const router = require("express").Router();
-const { createChat, getChat } = require("../controllers/chat");
+const { getChatById, getStudentChat, getSupervisorChats, sendMessage } = require("../controllers/chat");
 
 const authMiddleware = require("../middlewares/authMiddleware");
 
-router.use(authMiddleware);
 
-// Create a new chat for a supervision relationship
-router.post('/', createChat);
-router.get("/:id", getChat);
+// Student route
+router.get("/student", authMiddleware, getStudentChat);
 
+// Supervisor routes
+router.get("/supervisor", authMiddleware, getSupervisorChats);
 
+// Shared route for getting a specific chat
+router.get("/:id", authMiddleware, getChatById);
+
+router.post('/:id/messages', authMiddleware, sendMessage);
 
 module.exports = router;

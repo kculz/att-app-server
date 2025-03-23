@@ -206,9 +206,73 @@ const getSingleReport = async (req, res) => {
   }
 };
 
+const getStudentsProgress = async (req, res) => {
+  const supervisorId = req.user.id; // Extract supervisor ID from JWT token
+
+  try {
+    // Fetch all internships supervised by this supervisor
+    const internships = await Internship.find({ supervisor: supervisorId }).populate(
+      "student",
+      "name"
+    );
+
+    if (!internships || internships.length === 0) {
+      return res.status(404).json({ msg: "No students assigned to this supervisor." });
+    }
+
+    // Calculate progress for each student
+    const studentsProgress = internships.map((internship) => {
+      const startDate = new Date(internship.startDate);
+      const endDate = new Date(internship.endDate);
+      const currentDate = new Date();
+
+      // Calculate total weeks and completed weeks
+      const totalWeeks = Math.ceil((endDate - startDate) / (7 * 24 * 60 * 60 * 1000));
+      const weeksCompleted = Math.floor((currentDate - startDate) / (7 * 24 * 60 * 60 * 1000));
+
+      return {
+        studentId: internship.student._id,
+        studentName: internship.student.name,
+        totalWeeks,
+        weeksCompleted: Math.min(weeksCompleted, totalWeeks), // Ensure weeksCompleted doesn't exceed totalWeeks
+      };
+    });
+
+    return res.status(200).json(studentsProgress);
+  } catch (err) {
+    console.error("Error fetching students' progress:", err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+const getSupervisorReports = async (req, res) => {
+  const supervisorId = req.user.id; // Extract supervisor ID from JWT token
+
+  try {
+    // Fetch all internships supervised by this supervisor and populate student details
+    const internships = await Internship.find({ supervisor: supervisorId }).populate("student");
+
+    if (!internships.length) {
+      return res.status(404).json({ msg: "No students assigned to this supervisor." });
+    }
+
+    // Fetch reports for all students
+    const reports = await Report.find({
+      student: { $in: internships.map((intern) => intern.student._id) },
+    }).populate("student", "name");
+
+    return res.status(200).json(reports);
+  } catch (err) {
+    console.error("Error fetching supervisor reports:", err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
 module.exports.ReportController = {
   getWeeklyReports,
   createOrUpdateReport,
   setHolidays,
   getSingleReport,
+  getStudentsProgress,
+  getSupervisorReports, 
 };

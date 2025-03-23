@@ -117,4 +117,50 @@ const updateInternship = async (req, res) => {
   }
 };
 
-module.exports.InternshipController = { createInternship, getInternship, updateInternship };
+const getCompaniesAndStudents = async (req, res) => {
+  try {
+    // Fetch all internships with populated student and supervisor details
+    const internships = await Internship.find()
+      .populate("student", "name email")
+      .populate("supervisor", "name email");
+
+    if (!internships || internships.length === 0) {
+      return res.status(404).json({ msg: "No internships found." });
+    }
+
+    // Group internships by company
+    const companiesMap = new Map();
+
+    internships.forEach((internship) => {
+      const companyName = internship.companyName;
+      if (!companiesMap.has(companyName)) {
+        companiesMap.set(companyName, {
+          name: companyName,
+          location: internship.companyAddress,
+          students: [],
+        });
+      }
+
+      companiesMap.get(companyName).students.push({
+        studentName: internship.student.name,
+        startDate: internship.startDate,
+        endDate: internship.endDate,
+      });
+    });
+
+    // Convert the map to an array
+    const companies = Array.from(companiesMap.values());
+
+    return res.status(200).json(companies);
+  } catch (err) {
+    console.error("Error fetching companies and students:", err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+module.exports.InternshipController = {
+  createInternship,
+  getInternship,
+  updateInternship,
+  getCompaniesAndStudents,
+};
