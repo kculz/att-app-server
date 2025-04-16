@@ -35,4 +35,20 @@ const studentLoginAuth = async (req, res) => {
     }
   };
 
-module.exports = { supervisorLoginAuth, studentLoginAuth };
+  const cordinatorLoginAuth = async (req, res) => {
+    console.log("Request Body:", req.body); // Log the request body
+    const { email, password } = req.body;
+    try {
+      const user = await User.findOne({ email, role: "super-admin" });
+      if (!user) return res.status(400).json({ msg: "User does not exist." });
+      const isMatch = await bcrypt.compare(password, user.password);
+      if (!isMatch) return res.status(400).json({ msg: "Incorrect password." });
+      const payload = { id: user._id, name: user.name, role: user.role };
+      const token = jwt.sign(payload, process.env.JWT_SECRET);
+      return res.status(200).json({ token, msg: "Login success!" });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  };
+
+module.exports = { supervisorLoginAuth, studentLoginAuth, cordinatorLoginAuth };

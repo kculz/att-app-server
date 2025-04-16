@@ -11,7 +11,7 @@ router.get("/student", authMiddleware, getStudentChat);
 router.get("/supervisor", authMiddleware, getSupervisorChats);
 
 // Shared route for getting a specific chat
-router.get("/:id", authMiddleware, getChatById);
+router.get('/:id', authMiddleware,  getChatById);
 
 router.post('/:id/messages', authMiddleware, sendMessage);
 

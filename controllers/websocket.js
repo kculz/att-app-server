@@ -1,129 +1,369 @@
 const WebSocket = require('ws');
-const http = require('http');
-const url = require('url');
 const jwt = require('jsonwebtoken');
-const Chat = require('../models/Chat');
-const Message = require('../models/Message');
-const Supervision = require('../models/SupervisionSchema');
+const callController = require('./supervisionCall');
+const chatController = require('./chat');
 
-// User authentication middleware for WebSocket connections
-const authenticateWsUser = (request) => {
-  try {
-    const token = url.parse(request.url, true).query.token;
-    if (!token) return null;
+class WebSocketServer {
+  constructor(server) {
+    if (WebSocketServer.instance) {
+      return WebSocketServer.instance;
+    }
+    
+    this.wss = new WebSocket.Server({ 
+      server,
+      path: '/ws',
+      verifyClient: (info, done) => {
+        try {
+          const token = new URL(info.req.url, 'ws://localhost').searchParams.get('token');
+          if (!token) {
+            console.log('WebSocket connection rejected: No token provided');
+            return done(false, 401, 'Authentication token required');
+          }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    return decoded.userId;
-  } catch (error) {
-    console.error('WebSocket authentication error:', error);
-    return null;
+          const decoded = jwt.verify(token, process.env.JWT_SECRET);
+          info.req.user = decoded;
+          done(true);
+        } catch (error) {
+          console.log('WebSocket connection rejected: Invalid token', error.message);
+          done(false, 401, 'Invalid authentication token');
+        }
+      }
+    });
+    
+    this.connections = new Map();
+    this.setupConnectionHandlers();
+    
+    callController.setEmitFunction((userId, type, data) => {
+      this.broadcastToUser(userId, { type, ...data });
+    });
+    
+    WebSocketServer.instance = this;
   }
-};
 
-// Store active connections
-const connections = new Map();
+  static getInstance() {
+    if (!WebSocketServer.instance) {
+      throw new Error('WebSocketServer not initialized');
+    }
+    return WebSocketServer.instance;
+  }
 
-// Initialize WebSocket server
-const initializeWebSockets = (server) => {
-  const wss = new WebSocket.Server({ server });
+  setupConnectionHandlers() {
+    this.wss.on('connection', (ws, req) => {
+      const user = req.user;
+      console.log(`New WebSocket connection for user: ${user.id}`);
 
-  wss.on('connection', async (ws, request) => {
-    const userId = authenticateWsUser(request);
-    if (!userId) {
-      ws.close(1008, 'Authentication failed');
-      return;
+      if (!this.connections.has(user.id)) {
+        this.connections.set(user.id, new Set());
+      }
+      this.connections.get(user.id).add(ws);
+
+      this.sendMessage(ws, {
+        type: 'connection_established',
+        userId: user.id,
+        timestamp: new Date().toISOString()
+      });
+
+      // Fixed: Using arrow function to maintain proper 'this' context
+      ws.on('message', (message) => {
+        this.handleMessage(ws, user, message);
+      });
+
+      ws.on('close', () => this.cleanupConnection(user.id, ws));
+      ws.on('error', (error) => {
+        console.error(`WebSocket error for user ${user.id}:`, error);
+        this.cleanupConnection(user.id, ws);
+      });
+    });
+  }
+
+  async handleMessage(ws, user, message) {
+    try {
+      const data = this.parseMessage(message);
+      console.log(`Message from ${user.id}:`, data);
+
+      switch(data.type) {
+        case 'chat_message':
+          await this.handleChatMessage(user, data);
+          break;
+        case 'call_initiate':
+          await this.handleCallInitiation(user, data);
+          break;
+        case 'call_join':
+          await this.handleCallJoin(user, data);
+          break;
+        case 'call_end':
+          await this.handleCallEnd(user, data);
+          break;
+        case 'call_reject':
+          await this.handleCallReject(user, data);
+          break;
+        case 'webrtc_offer':
+          await this.handleWebRTCOffer(user, data);
+          break;
+        case 'webrtc_answer':
+          await this.handleWebRTCAnswer(user, data);
+          break;
+        case 'webrtc_ice_candidate':
+          await this.handleWebRTCICECandidate(user, data);
+          break;
+        case 'presence_update':
+          this.handlePresenceUpdate(user, data);
+          break;
+        default:
+          this.sendError(ws, 'Unknown message type');
+      }
+    } catch (error) {
+      console.error('Error processing message:', error);
+      this.sendError(ws, error.message);
+    }
+  }
+
+  parseMessage(message) {
+    try {
+      const messageString = message.toString();
+      return JSON.parse(messageString);
+    } catch (error) {
+      throw new Error('Invalid message format - must be valid JSON');
+    }
+  }
+
+  sendMessage(ws, data) {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(data));
+    }
+  }
+
+  sendError(ws, message) {
+    this.sendMessage(ws, {
+      type: 'error',
+      message,
+      timestamp: new Date().toISOString()
+    });
+  }
+
+  async handleChatMessage(sender, data) {
+    const { chatId, content, recipientId } = data;
+    
+    if (!chatId || !content || !recipientId) {
+      throw new Error('Missing required fields for chat message');
     }
 
-    // Store connection with userId
-    if (!connections.has(userId)) {
-      connections.set(userId, new Set());
+    const req = {
+      user: { id: sender.id },
+      params: { id: chatId },
+      body: { content, recipientId }
+    };
+
+    const res = {
+      status: (code) => ({
+        json: (response) => {
+          if (code === 201) {
+            this.broadcastToUser(recipientId, {
+              type: 'chat_message',
+              from: sender.id,
+              content: response.content,
+              timestamp: response.timestamp,
+              chatId
+            });
+          }
+        }
+      })
+    };
+
+    await chatController.sendMessage(req, res);
+  }
+
+  async handleCallInitiation(sender, data) {
+    const { studentId, callId, supervisionId, callData } = data;
+    
+    if (!studentId || !callId || !supervisionId) {
+      throw new Error('Missing required fields for call initiation');
     }
-    connections.get(userId).add(ws);
 
-    // Handle incoming messages
-    ws.on('message', async (message) => {
-      try {
-        const { chatId, content } = JSON.parse(message);
+    const req = {
+      user: { id: sender.id },
+      body: { studentId, callId, supervisionId, callData }
+    };
 
-        // Save message to database
-        const chat = await Chat.findById(chatId);
-        if (!chat) {
-          ws.send(JSON.stringify({ error: 'Chat not found' }));
-          return;
+    const res = {
+      status: (code) => ({
+        json: (response) => {
+          if (code === 200) {
+            this.broadcastToUser(studentId, {
+              type: 'incoming_call',
+              callId,
+              supervisionId,
+              callData: response.callData
+            });
+          }
         }
+      })
+    };
 
-        // Check if user is part of this supervision
-        const supervision = await Supervision.findById(chat.supervision);
-        if (!supervision || (supervision.student.toString() !== userId && supervision.supervisor.toString() !== userId)) {
-          ws.send(JSON.stringify({ error: 'Unauthorized access to chat' }));
-          return;
+    await callController.initiateCall(req, res);
+  }
+
+  async handleCallJoin(user, data) {
+    const { callId } = data;
+    
+    if (!callId) {
+      throw new Error('Missing callId for call join');
+    }
+
+    const req = {
+      user: { id: user.id },
+      params: { callId }
+    };
+
+    const res = {
+      status: (code) => ({
+        json: (response) => {
+          if (code === 200) {
+            const otherUserId = response.callData.participants.supervisor.id === user.id 
+              ? response.callData.participants.student.id 
+              : response.callData.participants.supervisor.id;
+            
+            this.broadcastToUser(otherUserId, {
+              type: 'user_joined',
+              callId,
+              userId: user.id
+            });
+          }
         }
+      })
+    };
 
-        // Create and save new message
-        const newMessage = new Message({
-          sender: userId,
-          content,
-          timestamp: Date.now(),
-          isRead: false,
-        });
-        await newMessage.save();
+    await callController.joinCall(req, res);
+  }
 
-        // Update chat with new message and last activity
-        chat.messages.push(newMessage._id);
-        chat.lastActivity = Date.now();
-        await chat.save();
+  async handleCallEnd(user, data) {
+    const { callId } = data;
+    
+    if (!callId) {
+      throw new Error('Missing callId for call end');
+    }
 
-        // Determine recipient
-        const recipientId =
-          supervision.student.toString() === userId
-            ? supervision.supervisor.toString()
-            : supervision.student.toString();
+    const req = {
+      user: { id: user.id },
+      params: { callId }
+    };
 
-        // Prepare message for broadcast
-        const messageData = {
-          type: 'new_message',
-          message: {
-            _id: newMessage._id,
-            sender: userId,
-            content,
-            timestamp: newMessage.timestamp,
-            isRead: false,
-          },
-          chatId,
-        };
-
-        // Send to sender for confirmation
-        ws.send(JSON.stringify(messageData));
-
-        // Broadcast to recipient if online
-        if (connections.has(recipientId)) {
-          connections.get(recipientId).forEach((conn) => {
-            if (conn.readyState === WebSocket.OPEN) {
-              conn.send(JSON.stringify(messageData));
-            }
-          });
+    const res = {
+      status: (code) => ({
+        json: (response) => {
+          if (code === 200) {
+            const otherUserId = response.call.supervisor._id.toString() === user.id 
+              ? response.call.student._id.toString() 
+              : response.call.supervisor._id.toString();
+            
+            this.broadcastToUser(otherUserId, {
+              type: 'call_ended',
+              callId,
+              endedBy: user.id
+            });
+          }
         }
-      } catch (error) {
-        console.error('Error processing message:', error);
-        ws.send(JSON.stringify({ error: 'Error processing message' }));
-      }
+      })
+    };
+
+    await callController.endCall(req, res);
+  }
+
+  async handleCallReject(user, data) {
+    const { callId } = data;
+    
+    if (!callId) {
+      throw new Error('Missing callId for call rejection');
+    }
+
+    const req = {
+      user: { id: user.id },
+      params: { callId }
+    };
+
+    const res = {
+      status: (code) => ({
+        json: (response) => {
+          if (code === 200) {
+            const otherUserId = response.call.supervisor._id.toString() === user.id 
+              ? response.call.student._id.toString() 
+              : response.call.supervisor._id.toString();
+            
+            this.broadcastToUser(otherUserId, {
+              type: 'call_rejected',
+              callId,
+              rejectedBy: user.id
+            });
+          }
+        }
+      })
+    };
+
+    await callController.rejectCall(req, res);
+  }
+
+  async handleWebRTCOffer(sender, data) {
+    const { recipientId, offer, callId } = data;
+    this.broadcastToUser(recipientId, {
+      type: 'webrtc_offer',
+      senderId: sender.id,
+      offer,
+      callId,
+      timestamp: new Date().toISOString()
     });
+  }
 
-    // Handle disconnection
-    ws.on('close', () => {
-      if (connections.has(userId)) {
-        connections.get(userId).delete(ws);
-        if (connections.get(userId).size === 0) {
-          connections.delete(userId);
-        }
-      }
+  async handleWebRTCAnswer(sender, data) {
+    const { recipientId, answer, callId } = data;
+    this.broadcastToUser(recipientId, {
+      type: 'webrtc_answer',
+      senderId: sender.id,
+      answer,
+      callId,
+      timestamp: new Date().toISOString()
     });
+  }
 
-    // Send initial connection confirmation
-    ws.send(JSON.stringify({ type: 'connected', userId }));
-  });
+  async handleWebRTCICECandidate(sender, data) {
+    const { recipientId, candidate, callId } = data;
+    this.broadcastToUser(recipientId, {
+      type: 'webrtc_ice_candidate',
+      senderId: sender.id,
+      candidate,
+      callId,
+      timestamp: new Date().toISOString()
+    });
+  }
 
-  return wss;
-};
+  handlePresenceUpdate(user, data) {
+    console.log(`Presence update from ${user.id}:`, data.status);
+    this.broadcastToUser(user.id, {
+      type: 'presence_update',
+      userId: user.id,
+      status: data.status,
+      timestamp: new Date().toISOString()
+    });
+  }
 
-module.exports = { initializeWebSockets };
+  broadcastToUser(userId, message) {
+    if (this.connections.has(userId)) {
+      const messageString = JSON.stringify(message);
+      this.connections.get(userId).forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(messageString);
+        }
+      });
+    }
+  }
+
+  cleanupConnection(userId, ws) {
+    if (this.connections.has(userId)) {
+      this.connections.get(userId).delete(ws);
+      if (this.connections.get(userId).size === 0) {
+        this.connections.delete(userId);
+      }
+    }
+  }
+}
+
+module.exports = { WebSocketServer };

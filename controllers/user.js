@@ -63,6 +63,29 @@ const createSupervisor = async (req, res) => {
 };
 
 
+const createCoordinator = async (req, res) => {
+  const { name, email, password, nationalID, phone } = req.body;
+  try {
+      // Check if user already exists
+      const user = await User.findOne({ email })
+      
+      if (user) return res.status(400).json({ msg: "User already exists." });
+
+      // Hash the password before saving
+      const salt = await bcrypt.genSalt(10); // Generate a salt
+      const hashedPassword = await bcrypt.hash(password, salt); // Hash the password
+
+      // Create a new supervisor with the hashed password
+      const newUser = new User({ name, email, password: hashedPassword, role: "super-admin", nationalID, phone });
+      await newUser.save();
+
+      return res.status(201).json({ msg: "Coordinator created successfully!" });
+  } catch (err) {
+      return res.status(500).json({ error: err.message });
+  }
+};
+
+
 const getStudentProfile = async (req, res) => {
     const { id } = req.user; // Assuming the user ID is extracted from the JWT token
     try {
@@ -115,6 +138,8 @@ const getStudentProfile = async (req, res) => {
       return res.status(500).json({ error: err.message });
     }
   };
+
+
   const getSupervisorProfile = async (req, res) => {
     const { id } = req.user; // Extract user ID from JWT token
   
@@ -136,11 +161,37 @@ const getStudentProfile = async (req, res) => {
       return res.status(500).json({ error: err.message });
     }
   };
+
+
+    
+  const getCoordinatorProfile = async (req, res) => {
+    const { id } = req.user; // Extract user ID from JWT token
+  
+    try {
+      const coordinator = await User.findById(id);
+  
+      if (!coordinator) {
+        return res.status(404).json({ msg: "Coordinator not found." });
+      }
+  
+      return res.status(200).json({
+        fullName: coordinator.name,
+        coordinatorId: coordinator.nationalID,
+        email: coordinator.email,
+        phone: coordinator.phone || "Not provided",
+        
+      });
+    } catch (err) {
+      return res.status(500).json({ error: err.message });
+    }
+  };
   
   module.exports.UserController = {
     createStudent,
     createSupervisor,
+    createCoordinator,
     getStudentProfile,
+    getSupervisorProfile,
+    getCoordinatorProfile,
     updateStudentProfile,
-    getSupervisorProfile, // <-- Added here
   };
