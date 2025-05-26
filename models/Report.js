@@ -54,15 +54,44 @@ const ReportSchema = new mongoose.Schema({
       },
     },
   ],
+  // New PDF upload fields
+  pdfReport: {
+    fileName: {
+      type: String,
+      required: false,
+    },
+    fileUrl: {
+      type: String,
+      required: false,
+    },
+    fileSize: {
+      type: Number,
+      required: false,
+    },
+    uploadedAt: {
+      type: Date,
+      required: false,
+    },
+  },
   status: {
     type: String,
-    enum: ["Pending-Review", "Submitted", "Reviewed"],
-    default: "Pending-Review",
+    enum: ["Pending-Review", "Submitted", "Reviewed", "Waiting"],
+    default: "Waiting",
   },
   createdAt: {
     type: Date,
     default: Date.now,
   },
+  updatedAt: {
+    type: Date,
+    default: Date.now,
+  },
+});
+
+// Update the updatedAt field before saving
+ReportSchema.pre('save', function(next) {
+  this.updatedAt = Date.now();
+  next();
 });
 
 module.exports = mongoose.model("Report", ReportSchema);

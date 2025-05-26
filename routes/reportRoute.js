@@ -10,5 +10,16 @@ router.get('/weekly/:weekNumber', authMiddleware, ReportController.getSingleRepo
 router.get("/students-progress", authMiddleware, checkRole(["supervisor"]), ReportController.getStudentsProgress);
 router.get("/supervisor", authMiddleware, checkRole(["supervisor"]), ReportController.getSupervisorReports);
 
+// New PDF upload routes
+router.post('/upload-pdf/:weekNumber', 
+  authMiddleware, 
+  ReportController.upload.single('pdfFile'), 
+  ReportController.uploadPdfReport
+);
+
+router.delete('/delete-pdf/:weekNumber', 
+  authMiddleware, 
+  ReportController.deletePdfReport
+);
 
 module.exports = router;

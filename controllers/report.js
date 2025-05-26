@@ -1,6 +1,33 @@
 const Report = require("../models/Report");
 const User = require("../models/User");
 const Internship = require("../models/Internship");
+const multer = require('multer');
+const admin = require('../firebase-admin-config'); // Adjust the path as necessary
+const { parse } = require("url");
+
+// Initialize Firebase Admin SDK (add this to your server initialization)
+// const serviceAccount = parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount),
+//   storageBucket: 'att-app-24fb5.appspot.com'
+// });
+
+const bucket = admin.storage().bucket();
+
+// Configure multer for memory storage
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    if (file.mimetype === 'application/pdf') {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed'), false);
+    }
+  },
+});
 
 const getWeeklyReports = async (req, res) => {
   const studentId = req.user.id; // Extract student ID from JWT token
@@ -23,16 +50,30 @@ const getWeeklyReports = async (req, res) => {
     // Generate weekly reports
     const weeklyReports = generateWeeklyReports(attachmentStartDate, attachmentEndDate, holidays);
 
+    // Fetch existing reports from database to get status and PDF info
+    const existingReports = await Report.find({ student: studentId });
+    
+    // Merge generated reports with existing data
+    const mergedReports = weeklyReports.map(generatedReport => {
+      const existingReport = existingReports.find(r => r.weekNumber === generatedReport.weekNumber);
+      return {
+        ...generatedReport,
+        status: existingReport?.status || 'Waiting',
+        pdfReport: existingReport?.pdfReport || null,
+        _id: existingReport?._id || null
+      };
+    });
+
     // Calculate total weeks, completed weeks, and weeks left
     const currentDate = new Date();
-    const totalWeeks = weeklyReports.length;
-    const weeksCompleted = weeklyReports.filter(
+    const totalWeeks = mergedReports.length;
+    const weeksCompleted = mergedReports.filter(
       (report) => new Date(report.endDate) <= currentDate
     ).length;
     const weeksLeft = totalWeeks - weeksCompleted;
 
     return res.status(200).json({
-      weeklyReports,
+      weeklyReports: mergedReports,
       totalWeeks,
       weeksCompleted,
       weeksLeft,
@@ -85,6 +126,133 @@ const createOrUpdateReport = async (req, res) => {
   }
 };
 
+// Upload PDF report
+const uploadPdfReport = async (req, res) => {
+  const studentId = req.user.id;
+  const { weekNumber } = req.params;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ msg: "Please upload a PDF file." });
+    }
+
+    // Generate unique filename
+    const fileName = `reports/${studentId}/week-${weekNumber}-${Date.now()}.pdf`;
+    
+    // Create a file reference in Firebase Storage
+    const file = bucket.file(fileName);
+    
+    // Create a write stream
+    const stream = file.createWriteStream({
+      metadata: {
+        contentType: 'application/pdf',
+      },
+    });
+
+    // Handle stream events
+    const uploadPromise = new Promise((resolve, reject) => {
+      stream.on('error', (error) => {
+        console.error('Upload error:', error);
+        reject(error);
+      });
+
+      stream.on('finish', async () => {
+        try {
+          // Make the file publicly accessible
+          await file.makePublic();
+          
+          // Get the public URL
+          const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+          
+          resolve({
+            fileName: req.file.originalname,
+            fileUrl: publicUrl,
+            fileSize: req.file.size,
+            uploadedAt: new Date()
+          });
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+
+    // Write the buffer to the stream
+    stream.end(req.file.buffer);
+
+    // Wait for upload to complete
+    const pdfInfo = await uploadPromise;
+
+    // Find or create the report
+    let report = await Report.findOne({ student: studentId, weekNumber });
+    
+    if (!report) {
+      // Create new report if it doesn't exist
+      report = new Report({
+        student: studentId,
+        weekNumber,
+        workingDays: [],
+        tasks: [],
+        offDaysOrHoliday: [],
+        status: "Pending-Review"
+      });
+    }
+
+    // Update report with PDF info
+    report.pdfReport = pdfInfo;
+    report.status = "Submitted";
+    
+    await report.save();
+
+    return res.status(200).json({ 
+      msg: "PDF report uploaded successfully!", 
+      report: report 
+    });
+
+  } catch (err) {
+    console.error("Error uploading PDF report:", err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+// Delete PDF report
+const deletePdfReport = async (req, res) => {
+  const studentId = req.user.id;
+  const { weekNumber } = req.params;
+
+  try {
+    const report = await Report.findOne({ student: studentId, weekNumber });
+    
+    if (!report || !report.pdfReport) {
+      return res.status(404).json({ msg: "PDF report not found." });
+    }
+
+    // Extract filename from URL
+    const url = report.pdfReport.fileUrl;
+    const fileName = url.split(`https://storage.googleapis.com/${bucket.name}/`)[1];
+    
+    if (fileName) {
+      // Delete from Firebase Storage
+      const file = bucket.file(fileName);
+      await file.delete();
+    }
+
+    // Remove PDF info from report
+    report.pdfReport = undefined;
+    report.status = "Waiting";
+    
+    await report.save();
+
+    return res.status(200).json({ 
+      msg: "PDF report deleted successfully!", 
+      report: report 
+    });
+
+  } catch (err) {
+    console.error("Error deleting PDF report:", err);
+    return res.status(500).json({ error: err.message });
+  }
+};
+
 // Set holidays for a student
 const setHolidays = async (req, res) => {
   const studentId = req.user.id; // Extract student ID from JWT token
@@ -121,12 +289,19 @@ const generateWeeklyReports = (attachmentStartDate, attachmentEndDate, holidays)
     const endOfWeek = new Date(currentDate);
     endOfWeek.setDate(currentDate.getDate() + 6);
 
+    // If end of week exceeds attachment end date, use attachment end date
+    if (endOfWeek > attachmentEndDate) {
+      endOfWeek.setTime(attachmentEndDate.getTime());
+    }
+
     // Generate working days for this week
     const workingDays = getWorkingDays(currentDate, endOfWeek, holidays);
 
     // Add the report
     reports.push({
       weekNumber: weekNumber,
+      startDate: new Date(currentDate),
+      endDate: new Date(endOfWeek),
       workingDays: workingDays,
       tasks: [],
       offDaysOrHoliday: getHolidaysInRange(currentDate, endOfWeek, holidays)
@@ -271,8 +446,11 @@ const getSupervisorReports = async (req, res) => {
 module.exports.ReportController = {
   getWeeklyReports,
   createOrUpdateReport,
+  uploadPdfReport,
+  deletePdfReport,
   setHolidays,
   getSingleReport,
   getStudentsProgress,
-  getSupervisorReports, 
+  getSupervisorReports,
+  upload, // Export multer middleware
 };

@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const mongoose = require('mongoose');
 const cors = require('cors');
+require('./firebase-admin-config'); // Initialize Firebase Admin SDK
 
 // Import routes
 const authRoutes = require('./routes/authRoute');
@@ -20,6 +21,7 @@ const {WebSocketServer} = require('./controllers/websocket');
 // Initialize Express app
 const app = express();
 const port = process.env.PORT || 3001;
+
 
 // Middleware
 app.use(cors({
