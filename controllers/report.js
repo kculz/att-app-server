@@ -3,15 +3,8 @@ const User = require("../models/User");
 const Internship = require("../models/Internship");
 const multer = require('multer');
 const admin = require('../firebase-admin-config'); // Adjust the path as necessary
-const { parse } = require("url");
 
-// Initialize Firebase Admin SDK (add this to your server initialization)
-// const serviceAccount = parse(process.env.FIREBASE_SERVICE_ACCOUNT_KEY);
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount),
-//   storageBucket: 'att-app-24fb5.appspot.com'
-// });
-
+// Get Firebase Storage bucket (Firebase Admin should already be initialized in main server file)
 const bucket = admin.storage().bucket();
 
 // Configure multer for memory storage
@@ -28,6 +21,12 @@ const upload = multer({
     }
   },
 });
+
+// Multi-purpose upload middleware for different document types
+const uploadMiddleware = {
+  single: upload.single('pdfFile'),
+  array: upload.array('documents', 5), // Allow up to 5 documents
+};
 
 const getWeeklyReports = async (req, res) => {
   const studentId = req.user.id; // Extract student ID from JWT token
@@ -212,6 +211,42 @@ const uploadPdfReport = async (req, res) => {
     console.error("Error uploading PDF report:", err);
     return res.status(500).json({ error: err.message });
   }
+};
+
+// Helper function to upload file to Firebase Storage
+const uploadFileToFirebase = async (file, filePath) => {
+  const firebaseFile = bucket.file(filePath);
+  
+  const stream = firebaseFile.createWriteStream({
+    metadata: {
+      contentType: file.mimetype,
+    },
+  });
+
+  return new Promise((resolve, reject) => {
+    stream.on('error', (error) => {
+      console.error('Upload error:', error);
+      reject(error);
+    });
+
+    stream.on('finish', async () => {
+      try {
+        await firebaseFile.makePublic();
+        const publicUrl = `https://storage.googleapis.com/${bucket.name}/${filePath}`;
+        
+        resolve({
+          fileName: file.originalname,
+          fileUrl: publicUrl,
+          fileSize: file.size,
+          uploadedAt: new Date()
+        });
+      } catch (error) {
+        reject(error);
+      }
+    });
+
+    stream.end(file.buffer);
+  });
 };
 
 // Delete PDF report
@@ -453,4 +488,5 @@ module.exports.ReportController = {
   getStudentsProgress,
   getSupervisorReports,
   upload, // Export multer middleware
+  uploadMiddleware, // Export the enhanced middleware
 };
